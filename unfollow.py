@@ -168,9 +168,9 @@ def main():
             time.sleep(60)
             
     if not args.dry_run:
-         print(f"\nFinished processing. Unfollowed {count} users.")
+        print(f"\nFinished processing. Unfollowed {count} users.")
     else:
-         print("\nFinished dry-run.")
+        print("\nFinished dry-run.")
 
 if __name__ == "__main__":
     main()
