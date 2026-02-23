@@ -49,3 +49,5 @@ node_modules/
 npm-debug.log
 yarn-error.log
 script_output.txt
+config/credentials.json
+README.md
