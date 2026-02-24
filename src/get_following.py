@@ -88,40 +88,60 @@ def _read_expected_count(driver: webdriver.Chrome) -> int:
 
 def _open_modal(driver: webdriver.Chrome, username: str) -> None:
     """
-    Navigate to the user's profile and click the Following link to open the modal.
+    Open the following list by:
+      1. First trying direct URL navigation to /<username>/following/
+         (most reliable — no click needed)
+      2. Falling back to clicking the Following link on the profile page
     """
-    profile_url = f"https://www.instagram.com/{username}/"
-    log.info(f"Navigating to profile: {profile_url}")
-    driver.get(profile_url)
-    human_sleep(3.5, 6.0)
+    # Strategy 1: Direct URL to following list page
+    following_url = f"https://www.instagram.com/{username}/following/"
+    log.info(f"Navigating directly to: {following_url}")
+    driver.get(following_url)
+    human_sleep(3.5, 5.5)
 
     if check_for_rate_limit(driver):
         auto_pause_after_rate_limit()
+        driver.get(following_url)
+        human_sleep(3.5, 5.5)
+
+    # Check if we landed on the following page (has a dialog or list)
+    current_url = driver.current_url
+    log.info(f"Current URL after navigation: {current_url}")
+
+    # If Instagram redirected back to profile (not signed in or URL unsupported),
+    # fall back to clicking the link on the profile page.
+    if "/following" not in current_url:
+        log.warning("Direct following URL redirected — falling back to profile page click ...")
+        profile_url = f"https://www.instagram.com/{username}/"
         driver.get(profile_url)
         human_sleep(3.5, 6.0)
 
-    log.info("Clicking Following link ...")
-    try:
-        following_link = WebDriverWait(driver, 15).until(
-            EC.element_to_be_clickable(
-                (By.XPATH, "//a[contains(@href,'/following/')]")
-            )
-        )
-        time.sleep(random.uniform(0.5, 1.0))
-        _js_click(driver, following_link)
-    except TimeoutException:
-        try:
-            following_link = WebDriverWait(driver, 10).until(
-                EC.element_to_be_clickable(
-                    (By.XPATH, "//li[.//span[contains(translate(text(),'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'following')]]")
+        # Try multiple selectors for the following link or button
+        clicked = False
+        for xpath in [
+            "//a[contains(@href,'/following/')]",
+            "//a[contains(@href,'following')]",
+            "//span[contains(translate(text(),'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'following')]/ancestor::a",
+            "//div[contains(@role,'button') and .//span[contains(translate(text(),'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'following')]]",
+        ]:
+            try:
+                el = WebDriverWait(driver, 10).until(
+                    EC.element_to_be_clickable((By.XPATH, xpath))
                 )
-            )
-            _js_click(driver, following_link)
-        except TimeoutException:
+                time.sleep(random.uniform(0.5, 1.0))
+                _js_click(driver, el)
+                log.info(f"Clicked Following via: {xpath}")
+                clicked = True
+                break
+            except TimeoutException:
+                continue
+
+        if not clicked:
             log.error("Could not find or click the Following link on your profile.")
             return
 
     human_sleep(2.5, 4.5)
+
 
 
 def _get_modal(driver: webdriver.Chrome):
@@ -285,6 +305,28 @@ def scrape_following(driver: webdriver.Chrome, username: str) -> list:
 
         # Scroll until all users are loaded
         _scroll_modal_to_end(driver, modal)
+
+        # DOM diagnostic probe — log what the page actually contains
+        try:
+            diag = driver.execute_script("""
+                var d = {};
+                d.url = window.location.href;
+                d.dialogFound = !!document.querySelector('[role="dialog"]');
+                var dialog = document.querySelector('[role="dialog"]');
+                d.aTagsInDialog = dialog ? dialog.querySelectorAll('a').length : -1;
+                d.aHrefTagsInDialog = dialog ? dialog.querySelectorAll('a[href]').length : -1;
+                d.spanTagsInDialog = dialog ? dialog.querySelectorAll('span').length : -1;
+                d.divAanoFound = !!document.querySelector('div._aano');
+                d.totalATags = document.querySelectorAll('a[href]').length;
+                // Sample first 3 a[href] on whole page
+                var allA = document.querySelectorAll('a[href]');
+                d.sampleHrefs = [];
+                for(var i=0; i < Math.min(3, allA.length); i++) d.sampleHrefs.push(allA[i].href);
+                return d;
+            """)
+            log.info(f"DOM probe: {diag}")
+        except Exception as e:
+            log.warning(f"DOM probe failed: {e}")
 
         # Extract usernames
         following = _extract_usernames(driver)

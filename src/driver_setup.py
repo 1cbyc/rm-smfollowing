@@ -73,22 +73,36 @@ def get_driver() -> webdriver.Chrome:
     # options.add_argument("--headless")      <- DO NOT UNCOMMENT
     # options.add_argument("--headless=new")  <- DO NOT UNCOMMENT
 
-    # Stability flags required for reliable macOS operation
+    # ── Window ────────────────────────────────────────────────────────────────
     options.add_argument("--start-maximized")
-    options.add_argument("--disable-gpu")
+    options.add_argument("--window-size=1280,900")
+
+    # ── Stability (macOS-safe — DO NOT add --disable-gpu on Apple Silicon) ────
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
+    options.add_argument("--disable-extensions")
+    options.add_argument("--disable-popup-blocking")
+    options.add_argument("--remote-debugging-port=0")   # avoids DevTools port conflict
 
-    # Anti-bot-detection flags
+    # ── Anti-bot-detection ────────────────────────────────────────────────────
     options.add_argument("--disable-blink-features=AutomationControlled")
     options.add_experimental_option("excludeSwitches", ["enable-automation"])
     options.add_experimental_option("useAutomationExtension", False)
+    options.add_experimental_option("prefs", {
+        "credentials_enable_service": False,
+        "profile.password_manager_enabled": False,
+    })
 
-    # Suppress Chrome's own logging noise in the terminal
+    # ── Persistent user profile (avoids "new device" detection) ──────────────
+    # NOTE: user-data-dir is intentionally disabled — it causes Chrome to crash
+    # with a profile lock error when another Chrome process has the dir open.
+    # user_data_dir = os.path.abspath("drivers/.chrome_profile")
+    # options.add_argument(f"--user-data-dir={user_data_dir}")
+
+    # ── Suppress Chrome logging noise ─────────────────────────────────────────
     options.add_argument("--log-level=3")
-    options.add_argument("--silent")
 
-    # Explicit local ChromeDriver path — no Service() fallback, no auto-detect
+    # ── Explicit local ChromeDriver — no Service() fallback, no auto-detect ──
     service = Service(_chromedriver_path())
 
     log.info("Launching Chrome browser (visible mode) ...")
@@ -107,6 +121,11 @@ def get_driver() -> webdriver.Chrome:
     )
 
     log.info("Chrome launched successfully.")
+
+    # NOTE: page_load_timeout intentionally NOT set here.
+    # When page_load_timeout fires it kills the window and makes the driver
+    # unusable. Instead we call driver.execute_script('window.stop()') after
+    # a fixed sleep in ig_login.py to interrupt slow page loads safely.
 
     # Version compatibility check — warn if Chrome major version does not match.
     try:

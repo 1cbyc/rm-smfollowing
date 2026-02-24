@@ -81,40 +81,54 @@ def _read_expected_count(driver: webdriver.Chrome) -> int:
 
 def _open_modal(driver: webdriver.Chrome, username: str) -> None:
     """
-    Navigate to the user's profile and click the Followers link to open the modal.
+    Open the followers list by navigating directly to /<username>/followers/
+    (most reliable — avoids click timing issues).
+    Falls back to clicking the link on the profile page if redirected.
     """
-    profile_url = f"https://www.instagram.com/{username}/"
-    log.info(f"Navigating to profile: {profile_url}")
-    driver.get(profile_url)
-    human_sleep(3.5, 6.0)
+    followers_url = f"https://www.instagram.com/{username}/followers/"
+    log.info(f"Navigating directly to: {followers_url}")
+    driver.get(followers_url)
+    human_sleep(3.5, 5.5)
 
     if check_for_rate_limit(driver):
         auto_pause_after_rate_limit()
+        driver.get(followers_url)
+        human_sleep(3.5, 5.5)
+
+    current_url = driver.current_url
+    log.info(f"Current URL after navigation: {current_url}")
+
+    if "/followers" not in current_url:
+        log.warning("Direct followers URL redirected — falling back to profile page click ...")
+        profile_url = f"https://www.instagram.com/{username}/"
         driver.get(profile_url)
         human_sleep(3.5, 6.0)
 
-    log.info("Clicking Followers link ...")
-    try:
-        followers_link = WebDriverWait(driver, 15).until(
-            EC.element_to_be_clickable(
-                (By.XPATH, "//a[contains(@href,'/followers/')]")
-            )
-        )
-        time.sleep(random.uniform(0.5, 1.0))
-        _js_click(driver, followers_link)
-    except TimeoutException:
-        try:
-            followers_link = WebDriverWait(driver, 10).until(
-                EC.element_to_be_clickable(
-                    (By.XPATH, "//li[.//span[contains(translate(text(),'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'follower')]]")
+        clicked = False
+        for xpath in [
+            "//a[contains(@href,'/followers/')]",
+            "//a[contains(@href,'followers')]",
+            "//span[contains(translate(text(),'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'follower')]/ancestor::a",
+            "//div[contains(@role,'button') and .//span[contains(translate(text(),'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'follower')]]",
+        ]:
+            try:
+                el = WebDriverWait(driver, 10).until(
+                    EC.element_to_be_clickable((By.XPATH, xpath))
                 )
-            )
-            _js_click(driver, followers_link)
-        except TimeoutException:
+                time.sleep(random.uniform(0.5, 1.0))
+                _js_click(driver, el)
+                log.info(f"Clicked Followers via: {xpath}")
+                clicked = True
+                break
+            except TimeoutException:
+                continue
+
+        if not clicked:
             log.error("Could not find or click the Followers link on your profile.")
             return
 
     human_sleep(2.5, 4.5)
+
 
 
 def _get_modal(driver: webdriver.Chrome):

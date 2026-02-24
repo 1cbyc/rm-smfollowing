@@ -55,31 +55,36 @@ def _js_click(driver: webdriver.Chrome, element) -> None:
 
 def _js_type(driver: webdriver.Chrome, element, text: str) -> None:
     """
-    Type text into an input field using JavaScript, one character at a time,
-    with a random human-like delay between characters (50-180 ms).
+    Set the full text value via a SINGLE JavaScript call (no loop),
+    then fire React-compatible input/change events.
 
-    Uses nativeInputValueSetter to trigger React's synthetic onChange events,
-    which Instagram's login form requires to register keystrokes correctly.
+    The character-by-character approach required N execute_script round-trips
+    which caused ChromeDriver's 120 s read timeout to fire on long passwords.
+    One call sets the value instantly, then we dispatch the events React needs.
     """
-    # First focus the field via JS
-    driver.execute_script("arguments[0].focus();", element)
-    brief_pause()
+    driver.execute_script(
+        """
+        var el = arguments[0];
+        var text = arguments[1];
 
-    for char in text:
-        # Inject the character by simulating native input value mutation.
-        # Without this, React's controlled input ignores value changes.
-        driver.execute_script(
-            """
-            var nativeInputValueSetter = Object.getOwnPropertyDescriptor(
-                window.HTMLInputElement.prototype, 'value'
-            ).set;
-            nativeInputValueSetter.call(arguments[0], arguments[0].value + arguments[1]);
-            arguments[0].dispatchEvent(new Event('input', { bubbles: true }));
-            """,
-            element,
-            char,
-        )
-        time.sleep(random.uniform(0.05, 0.18))
+        // Focus the field first
+        el.focus();
+
+        // Use nativeInputValueSetter so React's controlled input sees the change
+        var nativeSetter = Object.getOwnPropertyDescriptor(
+            window.HTMLInputElement.prototype, 'value'
+        ).set;
+        nativeSetter.call(el, text);
+
+        // Fire the events React listens to
+        el.dispatchEvent(new Event('input',  { bubbles: true }));
+        el.dispatchEvent(new Event('change', { bubbles: true }));
+        """,
+        element,
+        text,
+    )
+    # Small pause so the page has time to process the React state update
+    time.sleep(random.uniform(0.4, 0.8))
 
 
 def _wait_and_js_click(
@@ -161,10 +166,28 @@ def login(credentials: dict) -> webdriver.Chrome:
     driver = get_driver()
 
     try:
-        # Step 2: Navigate to Instagram login page
+        # Step 2: Navigate to Instagram login page.
+        # Running driver.get() in a daemon thread so we can abort after 50s via
+        # window.stop() -- prevents the ChromeDriver 120s HTTP read timeout
+        # without raising a TimeoutException that would kill the window.
         log.info("Navigating to Instagram login page ...")
-        driver.get(LOGIN_URL)
-        human_sleep(4.0, 7.0)  # wait for full render including JS bundles
+        import threading
+        def _do_get():
+            try:
+                driver.get(LOGIN_URL)
+            except Exception:
+                pass
+        _t = threading.Thread(target=_do_get, daemon=True)
+        _t.start()
+        _t.join(timeout=50)
+        if _t.is_alive():
+            log.info("Page still loading -- stopping via window.stop() ...")
+            try:
+                driver.execute_script("window.stop();")
+            except Exception:
+                pass
+        human_sleep(2.0, 4.0)
+
 
         # Step 3: Cookie / GDPR consent banner (EU regions) — JS click
         _dismiss_popup(driver, "Allow", timeout=5)
@@ -217,8 +240,10 @@ def login(credentials: dict) -> webdriver.Chrome:
             sys.exit(1)
 
         _js_click(driver, username_field)
-        _js_type(driver, username_field, username)
-        human_sleep(0.8, 2.0)
+        # Use send_keys for fast, reliable text entry — no JS round-trips needed
+        username_field.clear()
+        username_field.send_keys(username)
+        human_sleep(0.6, 1.5)
 
         # Step 5: Locate password field via multi-selector fallback
         password_field = None
@@ -242,7 +267,10 @@ def login(credentials: dict) -> webdriver.Chrome:
             sys.exit(1)
 
         _js_click(driver, password_field)
-        _js_type(driver, password_field, password)
+        password_field.clear()
+        password_field.send_keys(password)
+        human_sleep(0.4, 1.0)
+
         human_sleep(0.5, 1.5)
 
         # Step 6: Submit the login form via JS click (avoids native click crash)

@@ -55,3 +55,4 @@ config/whitelist.json
 data/followers.json
 data/following.json
 data/not_following_back.json
+drivers/
