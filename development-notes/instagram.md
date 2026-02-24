@@ -37,3 +37,13 @@ funny enough, the whitelist idea is actually very useful. i don’t want the bot
 still feels surreal watching code move my mouse and unfollow people one by one. very “i built this thing with my hands” moment.
 
 overall, this bot is getting cleaner and safer. feels like i’m building a small product instead of a script. which is interesting.
+
+okay, so i got things right and working finally. from getting the followign list to getting to save them to file in caase i wqnt to check those accounts again. also, i did it to be going strong at about 10 per minute. 
+
+i did this:
+```bash
+.venv/bin/python unfollow.py --yes > /tmp/uf.log 2>&1 &
+echo "PID: $!"
+```
+
+so i could load the PID from created earlier, so things don't break. i also added a --yes flag to skip any prompt cleanly, then run it as a proper foreground process.

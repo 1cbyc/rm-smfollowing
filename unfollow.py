@@ -200,6 +200,11 @@ def main() -> None:
         action="store_true",
         help="Preview which accounts would be unfollowed without making any changes.",
     )
+    parser.add_argument(
+        "--yes",
+        action="store_true",
+        help="Skip the confirmation prompt and unfollow immediately.",
+    )
     args = parser.parse_args()
 
     # ── Credentials ───────────────────────────────────────────────────────────
@@ -293,10 +298,11 @@ def main() -> None:
 
     # ── Live confirmation ─────────────────────────────────────────────────────
     print(f"\nAbout to unfollow {len(targets)} accounts.")
-    confirm = input("Type 'yes' to confirm: ").strip().lower()
-    if confirm != "yes":
-        print("Aborted — no changes made.")
-        return
+    if not args.yes:
+        confirm = input("Type 'yes' to confirm: ").strip().lower()
+        if confirm != "yes":
+            print("Aborted — no changes made.")
+            return
 
     csrf = get_csrf_token(session)
 
