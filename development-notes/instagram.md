@@ -47,3 +47,45 @@ echo "PID: $!"
 ```
 
 so i could load the PID from created earlier, so things don't break. i also added a --yes flag to skip any prompt cleanly, then run it as a proper foreground process.
+
+one good thing about this whole stuff is that once you run it, i did it in such a way that you'd get all the details of a user like this (in your data/following.json file):
+
+```json
+
+  {
+    "strong_id__": "113XXXXXX42",
+    "pk": "113XXXXXX42",
+    "pk_id": "113XXXXXX42",
+    "id": "113XXXXXX42",
+    "full_name": "dr. jay",
+    "fbid_v2": "17841411479270286",
+    "third_party_downloads_enabled": 1,
+    "profile_pic_id": "3800864974546167211_113XXXXXX42",
+    "profile_pic_url": "https://instagram.fabv7-1.fna.fbcdn.net/v/t51.2885-19/610688973_18170397904382643_8298519481802601224_n.jpg?stp=dst-jpg_s150x150_tt6&efg=eyJ2ZW5jb2RlX3RhZyI6InByb2ZpbGVfcGljLmRqYW5nby44NjcuYzIifQ&_nc_ht=instagram.fabv7-1.fna.fbcdn.net&_nc_cat=103&_nc_oc=Q6cZ2QFJVNcPQxlVrkcvpFEEP9idECyQ68mRY8NI-K0oNcboAlBOoy_89LyvBtYjWzBn8cg&_nc_ohc=nBrx45XSTFcQ7kNvwHFuowf&_nc_gid=3Tif9dy6DPBmiGSmol5PUQ&edm=ALB854YBAAAA&ccb=7-5&oh=00_AfsE1wbwuE3iXWXhLtSbeHvSoKAQaJXiljUsVLlF0ZdJhQ&oe=69A3C73E&_nc_sid=ce9561",
+    "is_verified": false,
+    "username": "graceb.oi",
+    "is_private": true,
+    "has_anonymous_profile_picture": false,
+    "account_badges": [],
+    "latest_reel_media": 0,
+    "is_favorite": false
+  },
+  {
+    "strong_id__": "32XXXX7113",
+    "pk": "32XXXX7113",
+    "pk_id": "32XXXX7113",
+    "id": "32XXXX7113",
+    "full_name": "Adeola",
+    "fbid_v2": "17841403213408978",
+    "third_party_downloads_enabled": 1,
+    "profile_pic_id": "3319217530129839473_32XXXX7113",
+    "profile_pic_url": "https://instagram.fabv7-1.fna.fbcdn.net/v/t51.2885-19/431247750_1403496616967762_9138244564723539865_n.jpg?stp=dst-jpg_s150x150_tt6&efg=eyJ2ZW5jb2RlX3RhZyI6InByb2ZpbGVfcGljLmRqYW5nby4xMDgwLmMyIn0&_nc_ht=instagram.fabv7-1.fna.fbcdn.net&_nc_cat=102&_nc_oc=Q6cZ2QFJVNcPQxlVrkcvpFEEP9idECyQ68mRY8NI-K0oNcboAlBOoy_89LyvBtYjWzBn8cg&_nc_ohc=SYjIm17x5X4Q7kNvwHZnPZ9&_nc_gid=3Tif9dy6DPBmiGSmol5PUQ&edm=ALB854YBAAAA&ccb=7-5&oh=00_AfsSOJ8bhsfeBQJqqZq1prjEJ2bndP9qZD4nJ2mJhzsHTg&oe=69A3AFE2&_nc_sid=ce9561",
+    "is_verified": false,
+    "username": "_deolaaa_",
+    "is_private": false,
+    "has_anonymous_profile_picture": false,
+    "account_badges": [],
+    "latest_reel_media": 0,
+    "is_favorite": false
+  },
+``
