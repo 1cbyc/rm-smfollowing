@@ -115,6 +115,10 @@ python3 main.py --dry-run
 python3 main.py --skip-scrape
 ```
 
+### Figured a shorter way to handle things w/o UI
+```bash
+
+
 ---
 
 ## How It Works
