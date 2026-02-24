@@ -1,3 +1,11 @@
+# Selenium-based bot (main.py + src/)
 selenium>=4.18.0
 webdriver-manager>=4.0.1
+
+# instagrapi-based script (unfollow.py)
+instagrapi==2.2.1
+urllib3<2
+Pillow>=8.1.1
+
+# Shared
 python-dotenv>=1.0.1

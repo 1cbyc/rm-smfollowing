@@ -1,135 +1,174 @@
+"""
+get_followers.py — Scrape the list of accounts that follow you on Instagram.
+
+Strategy:
+  - Navigate to your own profile page
+  - Click the "Followers" link to open the followers modal
+  - Scroll the modal until all usernames are loaded
+  - Extract every username from the list items
+  - Save results to data/followers.json
+
+This module mirrors get_following.py but targets the Followers modal.
+"""
+
 import json
-import os
 import random
-import time
-from typing import List
+import logging
 
 from selenium import webdriver
 from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
+from selenium.common.exceptions import (
+    TimeoutException,
+    StaleElementReferenceException,
+)
 
-from src.helpers import log, check_for_rate_limit, auto_pause_after_rate_limit
+from src.helpers import (
+    human_sleep,
+    brief_pause,
+    smooth_scroll_element,
+    wait_for_element,
+    check_for_rate_limit,
+    auto_pause_after_rate_limit,
+    log,
+)
 
-# ---------------------------------------------------------------------------
-# Instagram blocks direct navigation to /<username>/followers/ and
-# redirects silently to login.
-#
-# This scraper MUST use the internal React modal by:
-#  1. Loading the profile page.
-#  2. Waiting for the profile header to render.
-#  3. CLICKING the Followers number to trigger the JS modal.
-#  4. Waiting for the internal modal container (div._aano).
-#  5. Scrolling that container to the bottom.
-#  6. Extracting the username links.
-# ---------------------------------------------------------------------------
+FOLLOWERS_DATA_FILE = "data/followers.json"
 
 
-def scrape_followers(driver: webdriver.Chrome, username: str) -> List[str]:
+def scrape_followers(driver: webdriver.Chrome, username: str) -> list:
     """
-    Full scrape of the Followers list via profile modal click.
-    """
-    log.info("Followers scrape — attempt 1 ...")
+    Scrape every username in your Followers list.
 
-    # A. Navigate to profile
+    Args:
+        driver:   Authenticated Selenium WebDriver.
+        username: Your Instagram username.
+
+    Returns:
+        List of usernames (strings) who follow you.
+    """
     profile_url = f"https://www.instagram.com/{username}/"
+    followers_usernames = []
+
     log.info(f"Navigating to profile: {profile_url}")
     driver.get(profile_url)
+    human_sleep(3.5, 6.0)
 
+    # ── Check for rate-limit on page load ─────────────────────
     if check_for_rate_limit(driver):
         auto_pause_after_rate_limit()
         driver.get(profile_url)
+        human_sleep(3.0, 5.5)
 
-    # B. Wait for profile header to load
+    # ── Click the "Followers" count link to open the modal ────
+    log.info("Clicking 'Followers' link to open modal …")
     try:
-        WebDriverWait(driver, 20).until(
-            EC.presence_of_element_located((By.XPATH, "//header"))
+        followers_link = wait_for_element(
+            driver,
+            By.XPATH,
+            "//a[contains(@href, '/followers/')]",
+            timeout=15,
         )
-        log.info("Profile header loaded.")
-    except Exception:
-        log.error("Profile header did not load in time.")
-        return []
+        brief_pause()
+        followers_link.click()
+    except TimeoutException:
+        try:
+            followers_link = wait_for_element(
+                driver,
+                By.XPATH,
+                "//li[.//span[contains(text(),'follower')]]//a",
+                timeout=10,
+            )
+            followers_link.click()
+        except TimeoutException:
+            log.error("Could not find the 'Followers' button on your profile page.")
+            return []
 
-    # C. Click FOLLOWERS
-    log.info("Clicking the Followers link ...")
-    try:
-        clicked = False
-        for _ in range(20):
-            success = driver.execute_script("""
-                var links = document.querySelectorAll('a');
-                for (var i = 0; i < links.length; i++) {
-                    if (links[i].href && links[i].href.indexOf('/followers') !== -1) {
-                        links[i].click();
-                        return true;
-                    }
-                }
-                return false;
-            """)
-            if success:
-                clicked = True
-                break
-            time.sleep(1)
-            
-        if not clicked:
-            raise Exception("Timeout waiting for 'followers' link to appear in DOM.")
-    except Exception as e:
-        log.error(f"Could not find or click the Followers link: {e}")
-        return []
+    human_sleep(2.5, 5.0)
 
-    # D. Wait for modal
-    log.info("Waiting for Followers modal (div._aano) ...")
+    # ── Locate the scrollable modal container ─────────────────
+    log.info("Locating the followers list modal …")
     try:
-        modal = WebDriverWait(driver, 20).until(
-            EC.presence_of_element_located((By.CSS_SELECTOR, "div._aano"))
+        modal = wait_for_element(
+            driver,
+            By.XPATH,
+            "//div[@role='dialog']//div[contains(@class,'_aano') or @style]",
+            timeout=15,
         )
-    except Exception:
-        log.error("Followers modal did not load in time.")
-        return []
+    except TimeoutException:
+        try:
+            modal = wait_for_element(
+                driver,
+                By.XPATH,
+                "//div[@role='dialog']",
+                timeout=10,
+            )
+        except TimeoutException:
+            log.error("Could not find the followers modal.")
+            return []
 
-    # E. Scroll modal
-    log.info("Scrolling modal to load all users ...")
-    last_height = 0
+    # ── Scroll until no new users appear ──────────────────────
+    log.info("Scrolling the followers modal to load all users …")
+    last_count = 0
+    stale_rounds = 0
+
     while True:
-        driver.execute_script(
-            "arguments[0].scrollTop = arguments[0].scrollHeight", modal
-        )
-        time.sleep(random.uniform(1.2, 2.3))
+        try:
+            user_items = driver.find_elements(
+                By.XPATH,
+                "//div[@role='dialog']//a[contains(@href, '/') and not(contains(@href,'#'))]",
+            )
+            current_usernames = set()
+            for item in user_items:
+                href = item.get_attribute("href") or ""
+                parts = [p for p in href.replace("https://www.instagram.com", "").split("/") if p]
+                if len(parts) == 1:
+                    current_usernames.add(parts[0])
+        except StaleElementReferenceException:
+            current_usernames = set()
 
-        new_height = driver.execute_script(
-            "return arguments[0].scrollTop", modal
-        )
-        if new_height == last_height:
-            break
-        last_height = new_height
+        followers_usernames = list(set(followers_usernames) | current_usernames)
+        current_count = len(followers_usernames)
+
+        log.info(f"  Loaded {current_count} followers so far …")
+
+        if current_count == last_count:
+            stale_rounds += 1
+            if stale_rounds >= 4:
+                log.info("No new followers after repeated scrolling. Assuming all loaded.")
+                break
+        else:
+            stale_rounds = 0
+
+        last_count = current_count
+
+        smooth_scroll_element(driver, modal, pixels=random.randint(600, 1200))
+        human_sleep(1.8, 3.5)
 
         if check_for_rate_limit(driver):
             auto_pause_after_rate_limit()
 
-    # F. Extract usernames
-    log.info("Extracting usernames ...")
-    followers_list = []
-    seen = set()
-    try:
-        links = modal.find_elements(By.XPATH, ".//a[contains(@href, '/') and not(contains(@href, 'stories'))]")
-        for link in links:
-            href = link.get_attribute("href")
-            if href:
-                parts = [p for p in href.replace("https://www.instagram.com", "").split("/") if p]
-                if parts:
-                    uname = parts[0]
-                    if uname and uname not in ("explore", "accounts", "p", "reels") and uname not in seen:
-                        seen.add(uname)
-                        followers_list.append(uname)
-    except Exception as e:
-        log.error(f"Error extracting usernames: {e}")
+    log.info(f"✅ Scraped {len(followers_usernames)} followers.")
+    return followers_usernames
 
-    scraped_count = len(followers_list)
-    log.info(f"Scraped Followers count  : {scraped_count}")
 
-    # Save to JSON
-    os.makedirs("data", exist_ok=True)
-    with open("data/followers.json", "w", encoding="utf-8") as f:
-        json.dump(followers_list, f, indent=4)
-    log.info(f"Saved {scraped_count} followers -> data/followers.json")
+def save_followers(followers_usernames: list) -> None:
+    """Save the followers list to data/followers.json."""
+    with open(FOLLOWERS_DATA_FILE, "w", encoding="utf-8") as f:
+        json.dump(followers_usernames, f, indent=2, ensure_ascii=False)
+    log.info(f"Saved followers list → {FOLLOWERS_DATA_FILE}")
 
-    return followers_list
+
+def get_followers(driver: webdriver.Chrome, username: str) -> list:
+    """
+    Public entry point: scrape and save the followers list.
+
+    Args:
+        driver:   Authenticated WebDriver.
+        username: Your Instagram username.
+
+    Returns:
+        List of follower usernames.
+    """
+    followers = scrape_followers(driver, username)
+    save_followers(followers)
+    return followers

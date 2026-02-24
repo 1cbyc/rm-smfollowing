@@ -6,12 +6,11 @@ Execution order:
     1.  Load credentials from config/credentials.json
     2.  Log into Instagram via Selenium (ig_login.py)
     3.  Scrape accounts you follow  (get_following.py)
-    4.  Scrape your followers        (get_followers.py)
-    5.  Compare lists → find non-followers  (compare.py)
-    6.  Show a preview of accounts to unfollow
-    7.  Ask user: "Proceed? (y/n)"
-    8.  Run unfollow session with auto-pause on rate-limits  (unfollow.py)
-    9.  Close the browser cleanly
+    4.  Apply whitelist filter  (compare.py)
+    5.  Show a preview of accounts to unfollow
+    6.  Ask user: "Proceed? (y/n)"
+    7.  Run unfollow session with auto-pause on rate-limits  (unfollow.py)
+    8.  Close the browser cleanly
 
 Usage:
     python3 main.py               # normal run
@@ -27,8 +26,7 @@ import logging
 
 from src.helpers import log, human_sleep, long_pause
 from src.ig_login import login
-from src.get_following import scrape_following
-from src.get_followers import scrape_followers
+from src.get_following import get_following
 from src.compare import compare, show_preview
 from src.unfollow import run_unfollow_session
 
@@ -42,7 +40,7 @@ OUTPUT_FILE      = "data/not_following_back.json"
 BANNER = r"""
 ╔══════════════════════════════════════════════════════════╗
 ║        SM Un/Following Bot   (Instagram)                 ║
-║      Selenium-based  |  Medium-risk speed (15–20/hr)     ║
+║   Unfollows everyone except your whitelist (15–20/hr)    ║
 ╚══════════════════════════════════════════════════════════╝
 """
 
@@ -160,23 +158,16 @@ def main() -> None:
         else:
             # ── Step 3: Scrape following ───────────────────────
             log.info("=" * 55)
-            log.info("STEP 3/4: Scraping accounts you FOLLOW …")
+            log.info("STEP 3/3: Scraping accounts you FOLLOW …")
             log.info("=" * 55)
-            following_list = scrape_following(driver, credentials.get("username"))
+            following = get_following(driver, username)
             long_pause(5.0, 12.0)
 
-            # ── Step 4: Scrape followers ───────────────────────
+            # ── Step 4: Apply whitelist filter ────────────────
             log.info("=" * 55)
-            log.info("STEP 4/4: Scraping your FOLLOWERS …")
+            log.info("Applying whitelist filter …")
             log.info("=" * 55)
-            followers_list = scrape_followers(driver, credentials.get("username"))
-            long_pause(5.0, 12.0)
-
-            # ── Step 5: Compare ───────────────────────────────
-            log.info("=" * 55)
-            log.info("Comparing lists …")
-            log.info("=" * 55)
-            targets = compare(following=following, followers=followers)
+            targets = compare(following=following)
 
         # ── Step 6: Preview ───────────────────────────────────
         show_preview(targets)

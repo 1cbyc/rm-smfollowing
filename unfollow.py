@@ -1,4 +1,5 @@
 import os
+import json
 import time
 import random
 import argparse
@@ -8,8 +9,28 @@ from dotenv import load_dotenv
 from instagrapi import Client
 from instagrapi.exceptions import LoginRequired
 
+WHITELIST_FILE = "config/whitelist.json"
+
+
+def load_whitelist() -> set:
+    """Load whitelisted usernames from config/whitelist.json."""
+    try:
+        with open(WHITELIST_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        usernames = data.get("whitelist", []) if isinstance(data, dict) else data
+        whitelist = {u.lower().strip() for u in usernames if u}
+        print(f"Loaded {len(whitelist)} whitelisted account(s).")
+        return whitelist
+    except FileNotFoundError:
+        print(f"Warning: {WHITELIST_FILE} not found. No accounts will be whitelisted.")
+        return set()
+    except (json.JSONDecodeError, Exception) as e:
+        print(f"Warning: Could not load whitelist: {e}")
+        return set()
+
+
 def main():
-    parser = argparse.ArgumentParser(description="Unfollow Instagram accounts that don't follow you back.")
+    parser = argparse.ArgumentParser(description="Unfollow all Instagram accounts you follow, except those on your whitelist.")
     parser.add_argument("--dry-run", action="store_true", help="Print actions without actually unfollowing.")
     args = parser.parse_args()
 
@@ -107,17 +128,16 @@ def main():
             return
             
     print(f"User ID configured: {user_id}")
-    
+
+    # Load whitelist before fetching data
+    whitelist = load_whitelist()
+
     try:
         print("Fetching list of users you follow...")
         following = cl.user_following(user_id)
         print(f"You are following {len(following)} users.")
-        
-        print("Fetching list of your followers...")
-        followers = cl.user_followers(user_id)
-        print(f"You have {len(followers)} followers.")
     except Exception as e:
-        print(f"\nFailed to fetch followers/following: {e}")
+        print(f"\nFailed to fetch following list: {e}")
         print("\n=================")
         print("IMPORTANT: Instagram blocked the request. You likely have a Challenge Checkpoint pending.")
         print("Please open the Instagram app on your phone, tap 'This was me' to approve the new login.")
@@ -125,20 +145,25 @@ def main():
         print("=================\n")
         return
 
+    # Unfollow everyone except whitelisted accounts
     following_ids = set(following.keys())
-    follower_ids = set(followers.keys())
+    # Map user_id -> username for whitelist filtering
+    whitelist_ids = {
+        uid for uid, user in following.items()
+        if user.username.lower().strip() in whitelist
+    }
 
-    non_followers_ids = following_ids - follower_ids
-    print(f"\nFound {len(non_followers_ids)} users who don't follow you back.")
+    targets = following_ids - whitelist_ids
+    print(f"\nFound {len(targets)} account(s) to unfollow ({len(whitelist_ids)} whitelisted, skipped).")
 
-    if len(non_followers_ids) == 0:
-        print("Everyone you follow follows you back!")
+    if len(targets) == 0:
+        print("Nothing to unfollow.")
         return
 
-    print("\nStarting to check accounts...")
-    
+    print("\nStarting to process accounts...")
+
     count = 0
-    for target_id in non_followers_ids:
+    for target_id in targets:
         try:
             # We need to fetch user info to know if they are private
             user_info = cl.user_info(target_id)
@@ -168,7 +193,7 @@ def main():
             time.sleep(60)
             
     if not args.dry_run:
-        print(f"\nFinished processing. Unfollowed {count} users.")
+        print(f"\nFinished. Unfollowed {count} account(s).")
     else:
         print("\nFinished dry-run.")
 

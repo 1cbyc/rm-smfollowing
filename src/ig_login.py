@@ -1,16 +1,11 @@
 """
 ig_login.py — Instagram Login Module (Selenium-Based).
 
-All DOM interactions use JavaScript execution (driver.execute_script) instead
-of Selenium's native event injection (.click(), .send_keys). This bypasses a
-ChromeDriver 145 / macOS Sonoma crash where the Rust-based native event system
-segfaults on certain element interactions.
-
 Responsibilities:
   - Build a Chrome WebDriver via driver_setup.get_driver()
   - Navigate to instagram.com/accounts/login
-  - Fill in username and password with human-like JS typing
-  - Submit the form via JS click
+  - Fill in username and password with human-like typing
+  - Submit the form
   - Pause for 2FA if Instagram requests it (user approves manually)
   - Detect and dismiss post-login popups ("Save info?", "Notifications?")
   - Return the authenticated driver for use by other modules
@@ -26,14 +21,14 @@ import sys
 
 from selenium import webdriver
 from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException, NoSuchElementException
 
 from src.driver_setup import get_driver
 from src.helpers import (
     human_sleep,
     brief_pause,
+    long_pause,
+    wait_for_element,
     log,
 )
 
@@ -41,89 +36,37 @@ LOGIN_URL = "https://www.instagram.com/accounts/login/"
 
 
 # ---------------------------------------------------------------------------
-# JS-safe interaction helpers
+# Internal helpers
 # ---------------------------------------------------------------------------
 
-def _js_click(driver: webdriver.Chrome, element) -> None:
+def _type_like_human(element, text: str) -> None:
     """
-    Click an element using JavaScript instead of Selenium's native event.
-    Avoids the ChromeDriver 145 / macOS Arm64 Rust segfault on .click().
+    Type text into an element character-by-character at human typing speed.
+    Random delay of 50-200 ms per character mimics realistic keystrokes.
     """
-    driver.execute_script("arguments[0].click();", element)
-    brief_pause()
-
-
-def _js_type(driver: webdriver.Chrome, element, text: str) -> None:
-    """
-    Set the full text value via a SINGLE JavaScript call (no loop),
-    then fire React-compatible input/change events.
-
-    The character-by-character approach required N execute_script round-trips
-    which caused ChromeDriver's 120 s read timeout to fire on long passwords.
-    One call sets the value instantly, then we dispatch the events React needs.
-    """
-    driver.execute_script(
-        """
-        var el = arguments[0];
-        var text = arguments[1];
-
-        // Focus the field first
-        el.focus();
-
-        // Use nativeInputValueSetter so React's controlled input sees the change
-        var nativeSetter = Object.getOwnPropertyDescriptor(
-            window.HTMLInputElement.prototype, 'value'
-        ).set;
-        nativeSetter.call(el, text);
-
-        // Fire the events React listens to
-        el.dispatchEvent(new Event('input',  { bubbles: true }));
-        el.dispatchEvent(new Event('change', { bubbles: true }));
-        """,
-        element,
-        text,
-    )
-    # Small pause so the page has time to process the React state update
-    time.sleep(random.uniform(0.4, 0.8))
-
-
-def _wait_and_js_click(
-    driver: webdriver.Chrome,
-    by: str,
-    selector: str,
-    timeout: int = 15,
-    label: str = "",
-) -> bool:
-    """
-    Wait for an element, then click it via JavaScript.
-
-    Returns True on success, False if the element was not found in time.
-    """
-    try:
-        element = WebDriverWait(driver, timeout).until(
-            EC.presence_of_element_located((by, selector))
-        )
-        brief_pause()
-        _js_click(driver, element)
-        if label:
-            log.info(f"Clicked: {label}")
-        return True
-    except (TimeoutException, NoSuchElementException):
-        return False
+    for char in text:
+        element.send_keys(char)
+        time.sleep(random.uniform(0.05, 0.20))
 
 
 def _dismiss_popup(driver: webdriver.Chrome, button_text: str, timeout: int = 5) -> None:
     """
-    Try to find and JS-click a button containing button_text.
+    Try to find and click a button containing button_text.
     Silently ignores if the button is not present within timeout seconds.
     """
-    _wait_and_js_click(
-        driver,
-        By.XPATH,
-        f"//button[contains(text(), '{button_text}')]",
-        timeout=timeout,
-        label=f"popup '{button_text}'",
-    )
+    try:
+        btn = wait_for_element(
+            driver,
+            By.XPATH,
+            f"//button[contains(text(), '{button_text}')]",
+            timeout=timeout,
+        )
+        brief_pause()
+        btn.click()
+        log.info(f"Dismissed popup: '{button_text}'")
+        brief_pause()
+    except (TimeoutException, NoSuchElementException):
+        pass  # popup did not appear; continue normally
 
 
 # ---------------------------------------------------------------------------
@@ -135,16 +78,15 @@ def login(credentials: dict) -> webdriver.Chrome:
     Log into Instagram using the provided credentials.
 
     Steps:
-        1.  Launch Chrome in full visible mode via get_driver()
-        2.  Navigate to the Instagram login page
-        3.  Accept any cookie consent banners (JS click)
-        4.  Enter username field (JS type)
-        5.  Enter password field (JS type)
-        6.  Submit the login form (JS click)
-        7.  Wait for the page to load
-        8.  Detect and handle 2FA / challenge screen
-        9.  Dismiss post-login dialogs (JS click)
-        10. Verify the session is active and return the driver
+        1. Launch Chrome in full visible mode via get_driver()
+        2. Navigate to the Instagram login page
+        3. Accept any cookie consent banners
+        4. Enter username and password with human-like typing
+        5. Submit the login form
+        6. Wait for the page to load and detect any 2FA/challenge screen
+        7. Pause and prompt user to complete 2FA if needed
+        8. Dismiss post-login dialogs ("Save info?", "Turn on notifications?")
+        9. Verify the session is active and return the driver
 
     Args:
         credentials: dict with keys "username" and "password"
@@ -166,135 +108,49 @@ def login(credentials: dict) -> webdriver.Chrome:
     driver = get_driver()
 
     try:
-        # Step 2: Navigate to Instagram login page.
-        # Running driver.get() in a daemon thread so we can abort after 50s via
-        # window.stop() -- prevents the ChromeDriver 120s HTTP read timeout
-        # without raising a TimeoutException that would kill the window.
+        # Step 2: Navigate to Instagram login page
         log.info("Navigating to Instagram login page ...")
-        import threading
-        def _do_get():
-            try:
-                driver.get(LOGIN_URL)
-            except Exception:
-                pass
-        _t = threading.Thread(target=_do_get, daemon=True)
-        _t.start()
-        _t.join(timeout=50)
-        if _t.is_alive():
-            log.info("Page still loading -- stopping via window.stop() ...")
-            try:
-                driver.execute_script("window.stop();")
-            except Exception:
-                pass
-        human_sleep(2.0, 4.0)
+        driver.get(LOGIN_URL)
+        human_sleep(4.0, 7.0)  # Wait for the page to fully render
 
-
-        # Step 3: Cookie / GDPR consent banner (EU regions) — JS click
+        # Step 3: Accept cookie / GDPR consent banner if present (EU regions)
         _dismiss_popup(driver, "Allow", timeout=5)
         _dismiss_popup(driver, "Accept All", timeout=5)
         human_sleep(1.0, 2.5)
 
-        # Step 4: Locate username field and type via JS
+        # Step 4: Locate login fields
         log.info("Filling in credentials ...")
-        log.info(f"Current URL before field detection: {driver.current_url}")
+        username_field = wait_for_element(driver, By.NAME, "username", timeout=20)
+        password_field = wait_for_element(driver, By.NAME, "password", timeout=20)
 
-        username_field = None
-        # Try up to 2 page loads: standard login URL and mobile fallback
-        for attempt_url in [LOGIN_URL, "https://www.instagram.com/"]:
-            try:
-                if "login" not in driver.current_url:
-                    log.info(f"Not on login page — navigating to {attempt_url} ...")
-                    driver.get(attempt_url)
-                    human_sleep(4.0, 6.0)
+        # Click username field then type
+        username_field.click()
+        brief_pause()
+        _type_like_human(username_field, username)
+        human_sleep(0.8, 2.0)
 
-                # Try multiple selectors — Instagram's React form sometimes
-                # renders name= only after JS hydration, but aria-label and
-                # placeholder are in the initial HTML render.
-                for selector in [
-                    (By.NAME,        "username"),
-                    (By.XPATH,       "//input[@aria-label='Phone number, username, or email']"),
-                    (By.XPATH,       "//input[contains(@placeholder,'username') or contains(@placeholder,'phone') or contains(@placeholder,'email')]"),
-                    (By.CSS_SELECTOR, "input[type='text']"),
-                ]:
-                    try:
-                        username_field = WebDriverWait(driver, 15).until(
-                            EC.presence_of_element_located(selector)
-                        )
-                        log.info(f"Username field found via: {selector[1]}")
-                        break
-                    except TimeoutException:
-                        continue
-
-                if username_field:
-                    break
-            except Exception as e:
-                log.warning(f"Field detection error: {e} — retrying ...")
-                continue
-
-        if username_field is None:
-            log.error(
-                f"Username field not found. Current URL: {driver.current_url}\n"
-                "Instagram may be showing a consent page or blocking the bot."
-            )
-            driver.quit()
-            sys.exit(1)
-
-        _js_click(driver, username_field)
-        # Use send_keys for fast, reliable text entry — no JS round-trips needed
-        username_field.clear()
-        username_field.send_keys(username)
-        human_sleep(0.6, 1.5)
-
-        # Step 5: Locate password field via multi-selector fallback
-        password_field = None
-        for selector in [
-            (By.NAME,        "password"),
-            (By.XPATH,       "//input[@aria-label='Password']"),
-            (By.CSS_SELECTOR, "input[type='password']"),
-        ]:
-            try:
-                password_field = WebDriverWait(driver, 10).until(
-                    EC.presence_of_element_located(selector)
-                )
-                log.info(f"Password field found via: {selector[1]}")
-                break
-            except TimeoutException:
-                continue
-
-        if password_field is None:
-            log.error("Password field not found.")
-            driver.quit()
-            sys.exit(1)
-
-        _js_click(driver, password_field)
-        password_field.clear()
-        password_field.send_keys(password)
-        human_sleep(0.4, 1.0)
-
+        # Move to password field then type
+        password_field.click()
+        brief_pause()
+        _type_like_human(password_field, password)
         human_sleep(0.5, 1.5)
 
-        # Step 6: Submit the login form via JS click (avoids native click crash)
+        # Step 5: Submit the form
         log.info("Submitting login form ...")
-        submitted = _wait_and_js_click(
-            driver,
-            By.XPATH,
-            "//button[@type='submit']",
-            timeout=10,
-            label="submit button",
+        login_button = wait_for_element(
+            driver, By.XPATH, "//button[@type='submit']", timeout=10
         )
-        if not submitted:
-            # Fallback: submit via Enter key on the password field using JS
-            log.warning("Submit button not found — submitting via form.submit() ...")
-            driver.execute_script(
-                "arguments[0].closest('form').submit();", password_field
-            )
-            brief_pause()
+        brief_pause()
+        login_button.click()
 
-        # Step 7: Wait for post-login page to load
+        # Step 6: Wait for post-login page to load
         log.info("Waiting for Instagram to load after login ...")
         human_sleep(5.0, 9.0)
 
-        # Step 8: Handle 2FA or security challenge
+        # Step 7: Handle 2FA or security challenge
+        #
+        # If Instagram shows a verification/challenge screen the bot pauses
+        # and waits for the user to approve it on their phone before continuing.
         current_url = driver.current_url
         if any(k in current_url for k in ("challenge", "two_factor", "verify")):
             log.warning("-" * 60)
@@ -304,17 +160,18 @@ def login(credentials: dict) -> webdriver.Chrome:
             input("  Press Enter after completing 2FA: ")
             human_sleep(3.0, 6.0)
 
-        # Step 9: Dismiss post-login dialogs ("Save Login Info?", "Notifications?")
+        # Step 8: Dismiss post-login dialogs
         _dismiss_popup(driver, "Not Now", timeout=7)
         _dismiss_popup(driver, "Not now", timeout=5)
         human_sleep(1.5, 3.0)
-        _dismiss_popup(driver, "Not Now", timeout=7)
+
+        _dismiss_popup(driver, "Not Now", timeout=7)  # Notifications dialog
         _dismiss_popup(driver, "Not now", timeout=5)
         human_sleep(2.0, 4.0)
 
-        # Step 10: Verify the session is still on Instagram
+        # Step 9: Verify the session is active
         if "instagram.com" not in driver.current_url:
-            log.error("Login may have failed — redirected away from Instagram.")
+            log.error("Login may have failed — not on Instagram. Check your credentials.")
             driver.quit()
             sys.exit(1)
 

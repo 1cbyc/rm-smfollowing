@@ -1,12 +1,14 @@
 """
-compare.py — Compare following vs. followers to find non-followers.
+compare.py — Compare following list against whitelist to find unfollow targets.
 
 Logic:
-    not_following_back = following_set - followers_set - whitelist_set
+    to_unfollow = following_set - whitelist_set
+
+    Unfollows EVERYONE you follow, regardless of whether they follow you back,
+    EXCEPT accounts listed in the whitelist.
 
 Loads:
   data/following.json     → accounts you follow
-  data/followers.json     → accounts that follow you
   config/whitelist.json   → accounts to never unfollow
 
 Saves:
@@ -19,7 +21,6 @@ import logging
 from src.helpers import log
 
 FOLLOWING_FILE        = "data/following.json"
-FOLLOWERS_FILE        = "data/followers.json"
 WHITELIST_FILE        = "config/whitelist.json"
 OUTPUT_FILE           = "data/not_following_back.json"
 
@@ -48,14 +49,15 @@ def compare(
     followers: list = None,
 ) -> list:
     """
-    Compute the list of accounts you follow that do NOT follow you back,
-    excluding any accounts in the whitelist.
+    Compute the list of accounts to unfollow.
+
+    Unfollows EVERYONE you follow except accounts in the whitelist,
+    regardless of whether they follow you back.
 
     Args:
         following: Optional pre-loaded following list.
                    If None, loads from data/following.json.
-        followers: Optional pre-loaded followers list.
-                   If None, loads from data/followers.json.
+        followers: Ignored. Kept for backwards-compatibility.
 
     Returns:
         Sorted list of usernames to unfollow.
@@ -63,25 +65,22 @@ def compare(
     # ── Load data ──────────────────────────────────────────────
     if following is None:
         following = load_json_list(FOLLOWING_FILE)
-    if followers is None:
-        followers = load_json_list(FOLLOWERS_FILE)
 
     whitelist_data = load_json_list(WHITELIST_FILE)
 
     # ── Normalise to lowercase sets for reliable comparison ───
-    following_set  = {u.lower().strip() for u in following if u}
-    followers_set  = {u.lower().strip() for u in followers if u}
-    whitelist_set  = {u.lower().strip() for u in whitelist_data if u}
+    following_set = {u.lower().strip() for u in following if u}
+    whitelist_set = {u.lower().strip() for u in whitelist_data if u}
 
     log.info(f"You follow:           {len(following_set):>6} accounts")
-    log.info(f"Followers:            {len(followers_set):>6} accounts")
-    log.info(f"Whitelist:            {len(whitelist_set):>6} accounts")
+    log.info(f"Whitelist:            {len(whitelist_set):>6} accounts (will be kept)")
 
     # ── Core set logic ─────────────────────────────────────────
-    not_following_back = following_set - followers_set - whitelist_set
+    # Unfollow everyone except whitelisted accounts
+    to_unfollow = following_set - whitelist_set
 
-    result = sorted(not_following_back)
-    log.info(f"Not following back:   {len(result):>6} accounts  (after whitelist exclusion)")
+    result = sorted(to_unfollow)
+    log.info(f"To unfollow:          {len(result):>6} accounts  (after whitelist exclusion)")
 
     # ── Save results ───────────────────────────────────────────
     with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
@@ -91,20 +90,20 @@ def compare(
     return result
 
 
-def show_preview(not_following_back: list, limit: int = 30) -> None:
+def show_preview(targets: list, limit: int = 30) -> None:
     """
     Print a formatted preview table of users to be unfollowed.
 
     Args:
-        not_following_back: List of usernames.
-        limit:              Max rows to show before truncating.
+        targets: List of usernames to unfollow.
+        limit:   Max rows to show before truncating.
     """
-    total = len(not_following_back)
+    total = len(targets)
     print("\n" + "=" * 55)
     print(f"  👥  Accounts to Unfollow ({total} total)")
     print("=" * 55)
 
-    display = not_following_back[:limit]
+    display = targets[:limit]
     for i, username in enumerate(display, start=1):
         print(f"  {i:>4}.  @{username}")
 

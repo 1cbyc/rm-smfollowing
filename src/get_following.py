@@ -1,139 +1,227 @@
+"""
+get_following.py — Scrape the list of accounts you follow on Instagram.
+
+Strategy:
+  - Navigate to your own profile page
+  - Click the "Following" link to open the following modal
+  - Scroll the modal until all usernames are loaded (infinite-scroll pattern)
+  - Extract every username from the list items
+  - Save results to data/following.json
+
+Note: Instagram loads users lazily; we must keep scrolling until the
+      bottom is reached (i.e., the count stops growing).
+"""
+
 import json
-import os
-import random
 import time
-from typing import List
+import random
+import logging
 
 from selenium import webdriver
 from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
+from selenium.common.exceptions import (
+    NoSuchElementException,
+    TimeoutException,
+    StaleElementReferenceException,
+)
 
-from src.helpers import log, check_for_rate_limit, auto_pause_after_rate_limit
+from src.helpers import (
+    human_sleep,
+    brief_pause,
+    long_pause,
+    smooth_scroll_element,
+    wait_for_element,
+    check_for_rate_limit,
+    auto_pause_after_rate_limit,
+    log,
+)
 
-# ---------------------------------------------------------------------------
-# Instagram blocks direct navigation to /<username>/following/ and
-# redirects silently to login.
-#
-# This scraper MUST use the internal React modal by:
-#  1. Loading the profile page.
-#  2. Waiting for the profile header to render.
-#  3. CLICKING the Following number to trigger the JS modal.
-#  4. Waiting for the internal modal container (div._aano).
-#  5. Scrolling that container to the bottom.
-#  6. Extracting the username links.
-# ---------------------------------------------------------------------------
+FOLLOWING_DATA_FILE = "data/following.json"
 
 
-def scrape_following(driver: webdriver.Chrome, username: str) -> List[str]:
+def _get_username_from_driver(driver: webdriver.Chrome) -> str:
     """
-    Full scrape of the Following list via profile modal click.
+    Extract the currently logged-in username from the Instagram page URL
+    or from the profile avatar link in the nav bar.
     """
-    log.info("Following scrape — attempt 1 ...")
+    # Try clicking on the profile link in the sidebar — it contains the username in href
+    try:
+        profile_links = driver.find_elements(
+            By.XPATH,
+            "//a[contains(@href, '/') and .//span[contains(@class,'_aa8j')]]",
+        )
+        for link in profile_links:
+            href = link.get_attribute("href") or ""
+            if href.count("/") == 4 and "accounts" not in href and "explore" not in href:
+                username = href.rstrip("/").split("/")[-1]
+                if username:
+                    return username
+    except Exception:
+        pass
 
-    # A. Navigate to profile
+    # Fallback: find username via the "Edit profile" button on the profile page
+    try:
+        # Navigate to feed and find profile link in nav
+        driver.get("https://www.instagram.com/")
+        human_sleep(2, 4)
+        links = driver.find_elements(By.TAG_NAME, "a")
+        for link in links:
+            href = link.get_attribute("href") or ""
+            if href.endswith("/?hl=en") or not href:
+                continue
+            parts = [p for p in href.split("/") if p]
+            if len(parts) == 1 and "instagram.com" not in parts[0]:
+                return parts[0]
+    except Exception:
+        pass
+
+    raise RuntimeError(
+        "Could not determine your Instagram username automatically. "
+        "Please verify you are logged in."
+    )
+
+
+def scrape_following(driver: webdriver.Chrome, username: str) -> list:
+    """
+    Scrape every username in your Following list.
+
+    Args:
+        driver:   Authenticated Selenium WebDriver.
+        username: Your Instagram username (e.g. 'johndoe').
+
+    Returns:
+        List of usernames (strings) you follow.
+    """
     profile_url = f"https://www.instagram.com/{username}/"
+    following_usernames = []
+
     log.info(f"Navigating to profile: {profile_url}")
     driver.get(profile_url)
+    human_sleep(3.0, 5.5)
 
+    # ── Check for rate-limit on page load ────────────────────
     if check_for_rate_limit(driver):
         auto_pause_after_rate_limit()
         driver.get(profile_url)
+        human_sleep(3.0, 5.5)
 
-    # B. Wait for profile header to load
+    # ── Click the "Following" count link to open the modal ───
+    log.info("Clicking 'Following' link to open modal …")
     try:
-        WebDriverWait(driver, 20).until(
-            EC.presence_of_element_located((By.XPATH, "//header"))
+        following_link = wait_for_element(
+            driver,
+            By.XPATH,
+            "//a[contains(@href, '/following/')]",
+            timeout=15,
         )
-        log.info("Profile header loaded.")
-    except Exception:
-        log.error("Profile header did not load in time.")
-        return []
+        brief_pause()
+        following_link.click()
+    except TimeoutException:
+        # Some profiles render a different structure — try the text-based approach
+        try:
+            following_link = wait_for_element(
+                driver,
+                By.XPATH,
+                "//li[.//span[contains(text(),'following')]]//a",
+                timeout=10,
+            )
+            following_link.click()
+        except TimeoutException:
+            log.error("Could not find the 'Following' button on your profile page.")
+            return []
 
-    # C. Click FOLLOWING
-    log.info("Clicking the Following link ...")
-    try:
-        # We query and click entirely inside JS to avoid passing WebElements over
-        # the CDP bridge. If React re-renders between fetching the element and
-        # clicking, ChromeDriver 145 on macOS Arm64 segfaults when serializing the stale element.
-        clicked = False
-        for _ in range(20):
-            success = driver.execute_script("""
-                var links = document.querySelectorAll('a');
-                for (var i = 0; i < links.length; i++) {
-                    if (links[i].href && links[i].href.indexOf('/following') !== -1) {
-                        links[i].click();
-                        return true;
-                    }
-                }
-                return false;
-            """)
-            if success:
-                clicked = True
-                break
-            time.sleep(1)
-            
-        if not clicked:
-            raise Exception("Timeout waiting for 'following' link to appear in DOM.")
-    except Exception as e:
-        log.error(f"Could not find or click the Following link: {e}")
-        return []
+    human_sleep(2.5, 5.0)
 
-    # D. Wait for modal
-    log.info("Waiting for Following modal (div._aano) ...")
+    # ── Locate the scrollable modal container ────────────────
+    log.info("Locating the following list modal …")
     try:
-        modal = WebDriverWait(driver, 20).until(
-            EC.presence_of_element_located((By.CSS_SELECTOR, "div._aano"))
+        # The modal dialog is a role=dialog element
+        modal = wait_for_element(
+            driver,
+            By.XPATH,
+            "//div[@role='dialog']//div[contains(@class,'_aano') or @style]",
+            timeout=15,
         )
-    except Exception:
-        log.error("Following modal did not load in time.")
-        return []
+    except TimeoutException:
+        # Fallback: grab any scrollable div inside the dialog
+        try:
+            modal = wait_for_element(
+                driver,
+                By.XPATH,
+                "//div[@role='dialog']",
+                timeout=10,
+            )
+        except TimeoutException:
+            log.error("Could not find the following modal.")
+            return []
 
-    # E. Scroll modal
-    log.info("Scrolling modal to load all users ...")
-    last_height = 0
+    # ── Scroll until no new users appear ─────────────────────
+    log.info("Scrolling the following modal to load all users …")
+    last_count = 0
+    stale_rounds = 0  # How many rounds without new users
+
     while True:
-        driver.execute_script(
-            "arguments[0].scrollTop = arguments[0].scrollHeight", modal
-        )
-        time.sleep(random.uniform(1.2, 2.3))
+        # Collect usernames currently visible
+        try:
+            user_items = driver.find_elements(
+                By.XPATH,
+                "//div[@role='dialog']//a[contains(@href, '/') and not(contains(@href,'#'))]",
+            )
+            current_usernames = set()
+            for item in user_items:
+                href = item.get_attribute("href") or ""
+                parts = [p for p in href.replace("https://www.instagram.com", "").split("/") if p]
+                if len(parts) == 1:
+                    current_usernames.add(parts[0])
+        except StaleElementReferenceException:
+            current_usernames = set()
 
-        new_height = driver.execute_script(
-            "return arguments[0].scrollTop", modal
-        )
-        if new_height == last_height:
-            break
-        last_height = new_height
+        following_usernames = list(set(following_usernames) | current_usernames)
+        current_count = len(following_usernames)
 
+        log.info(f"  Loaded {current_count} following users so far …")
+
+        if current_count == last_count:
+            stale_rounds += 1
+            if stale_rounds >= 4:
+                # No new users after 4 scroll attempts — likely reached the end
+                log.info("No new users after repeated scrolling. Assuming all loaded.")
+                break
+        else:
+            stale_rounds = 0
+
+        last_count = current_count
+
+        # ── Scroll modal down ─────────────────────────────────
+        smooth_scroll_element(driver, modal, pixels=random.randint(600, 1200))
+        human_sleep(1.8, 3.5)  # Wait for new users to lazy-load
+
+        # Check for rate limiting mid-scroll
         if check_for_rate_limit(driver):
             auto_pause_after_rate_limit()
 
-    # F. Extract usernames
-    log.info("Extracting usernames ...")
-    following_list = []
-    seen = set()
-    try:
-        links = modal.find_elements(By.XPATH, ".//a[contains(@href, '/') and not(contains(@href, 'stories'))]")
-        for link in links:
-            href = link.get_attribute("href")
-            if href:
-                parts = [p for p in href.replace("https://www.instagram.com", "").split("/") if p]
-                if parts:
-                    uname = parts[0]
-                    # Filter out system paths just in case
-                    if uname and uname not in ("explore", "accounts", "p", "reels") and uname not in seen:
-                        seen.add(uname)
-                        following_list.append(uname)
-    except Exception as e:
-        log.error(f"Error extracting usernames: {e}")
+    log.info(f"✅ Scraped {len(following_usernames)} accounts you follow.")
+    return following_usernames
 
-    scraped_count = len(following_list)
-    log.info(f"Scraped Following count  : {scraped_count}")
 
-    # Save to JSON
-    os.makedirs("data", exist_ok=True)
-    with open("data/following.json", "w", encoding="utf-8") as f:
-        json.dump(following_list, f, indent=4)
-    log.info(f"Saved {scraped_count} following users -> data/following.json")
+def save_following(following_usernames: list) -> None:
+    """Save the following list to data/following.json."""
+    with open(FOLLOWING_DATA_FILE, "w", encoding="utf-8") as f:
+        json.dump(following_usernames, f, indent=2, ensure_ascii=False)
+    log.info(f"Saved following list → {FOLLOWING_DATA_FILE}")
 
-    return following_list
+
+def get_following(driver: webdriver.Chrome, username: str) -> list:
+    """
+    Public entry point: scrape and save the following list.
+
+    Args:
+        driver:   Authenticated WebDriver.
+        username: Your Instagram username.
+
+    Returns:
+        List of following usernames.
+    """
+    following = scrape_following(driver, username)
+    save_following(following)
+    return following

@@ -6,6 +6,7 @@ Features:
   - Detects and SKIPS private accounts
   - Clicks the "Following" button → waits → clicks "Unfollow" in the popup
   - Logs each action to the console
+  - Saves a persistent history of unfollowed accounts to data/unfollowed_history.json
   - Enforces medium-risk speed: ~15–20 unfollows/hour
     (170–240 seconds between each unfollow)
   - Auto-detects Instagram rate-limit phrases on ANY page
@@ -13,9 +14,12 @@ Features:
   - Handles errors gracefully without crashing
 """
 
+import os
+import json
 import time
 import random
 import logging
+from datetime import datetime
 
 from selenium import webdriver
 from selenium.webdriver.common.by import By
@@ -43,6 +47,9 @@ from src.helpers import (
 # which is about 360–480/day if run all day. Keep it under 20/hour.
 MAX_UNFOLLOWS_PER_HOUR = 20
 
+# ── Files ─────────────────────────────────────────────────────────────────────
+HISTORY_FILE = "data/unfollowed_history.json"
+
 # ── Unfollow button detection constants ─────────────────────────────────────
 # Instagram uses aria-label and text to render the Following button.
 _FOLLOWING_BTN_SELECTORS = [
@@ -65,6 +72,32 @@ _PRIVATE_INDICATORS = [
 ]
 
 _LOCK_ICON_ALT = "This Account is Private"
+
+
+def _record_unfollow_history(username: str) -> None:
+    """
+    Append an unfollow action to the historical log file so the user
+    can keep track of who was unfollowed over time.
+    """
+    history = []
+    if os.path.exists(HISTORY_FILE):
+        try:
+            with open(HISTORY_FILE, "r", encoding="utf-8") as f:
+                history = json.load(f)
+        except (json.JSONDecodeError, IOError):
+            pass
+
+    entry = {
+        "username": username,
+        "timestamp": datetime.now().isoformat()
+    }
+    history.append(entry)
+
+    try:
+        with open(HISTORY_FILE, "w", encoding="utf-8") as f:
+            json.dump(history, f, indent=2, ensure_ascii=False)
+    except IOError as e:
+        log.warning(f"Could not save unfollow history: {e}")
 
 
 def _is_private_account(driver: webdriver.Chrome) -> bool:
@@ -185,6 +218,8 @@ def unfollow_user(driver: webdriver.Chrome, username: str) -> str:
             auto_pause_after_rate_limit()
 
         log.info(f"  ✅  Unfollowed @{username}")
+        # Log to history
+        _record_unfollow_history(username)
         return "unfollowed"
 
     except Exception as exc:
@@ -293,5 +328,7 @@ def run_unfollow_session(
     log.info(f"  Not following:   {stats['not_following']}")
     log.info(f"  Errors:          {stats['errors']}")
     log.info("=" * 50)
+
+    log.info(f"History of all unfollowed accounts is maintained in: {HISTORY_FILE}")
 
     return stats
