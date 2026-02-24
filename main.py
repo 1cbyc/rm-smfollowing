@@ -27,8 +27,8 @@ import logging
 
 from src.helpers import log, human_sleep, long_pause
 from src.ig_login import login
-from src.get_following import get_following
-from src.get_followers import get_followers
+from src.get_following import scrape_following
+from src.get_followers import scrape_followers
 from src.compare import compare, show_preview
 from src.unfollow import run_unfollow_session
 
@@ -162,14 +162,14 @@ def main() -> None:
             log.info("=" * 55)
             log.info("STEP 3/4: Scraping accounts you FOLLOW …")
             log.info("=" * 55)
-            following = get_following(driver, username)
+            following_list = scrape_following(driver, credentials.get("username"))
             long_pause(5.0, 12.0)
 
             # ── Step 4: Scrape followers ───────────────────────
             log.info("=" * 55)
             log.info("STEP 4/4: Scraping your FOLLOWERS …")
             log.info("=" * 55)
-            followers = get_followers(driver, username)
+            followers_list = scrape_followers(driver, credentials.get("username"))
             long_pause(5.0, 12.0)
 
             # ── Step 5: Compare ───────────────────────────────
