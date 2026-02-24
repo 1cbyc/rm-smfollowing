@@ -3,11 +3,8 @@ import json
 import time
 import random
 import argparse
-import hashlib
-import uuid
 from dotenv import load_dotenv
 from instagrapi import Client
-from instagrapi.exceptions import LoginRequired
 
 WHITELIST_FILE = "config/whitelist.json"
 
@@ -29,89 +26,99 @@ def load_whitelist() -> set:
         return set()
 
 
+def login_via_sessionid(cl: Client, sessionid: str, username: str, session_file: str) -> bool:
+    """
+    Log in using a browser session ID — the most reliable method.
+    No challenge or 2FA popup required.
+    """
+    try:
+        print("Logging in via session ID (browser cookie)...")
+        cl.login_by_sessionid(sessionid)
+        cl.dump_settings(session_file)
+        print("Logged in successfully via session ID.")
+        return True
+    except Exception as e:
+        print(f"[ERROR] Session ID login failed: {e}")
+        return False
+
+
+def login_via_password(cl: Client, username: str, password: str, session_file: str) -> bool:
+    """
+    Log in using username + password with challenge code support.
+    """
+    print(f"Attempting password login for @{username}...")
+    try:
+        cl.login(username, password)
+        cl.dump_settings(session_file)
+        print("Logged in successfully and session saved.")
+        return True
+    except Exception as e:
+        err_str = str(e)
+        print(f"\n[ERROR] Password login failed: {err_str}")
+        print("\n=================")
+        print("Instagram is blocking the API login with a security challenge.")
+        print("")
+        print("SOLUTION — use your browser session ID instead:")
+        print("  1. Open https://www.instagram.com in Chrome/Safari and log in.")
+        print("  2. Open DevTools (F12 or Cmd+Option+I).")
+        print("  3. Go to: Application → Cookies → https://www.instagram.com")
+        print("  4. Find the cookie named: sessionid")
+        print("  5. Copy its value and add it to your .env file:")
+        print("       IG_SESSIONID=your_session_id_here")
+        print("  6. Run the script again.")
+        print("=================\n")
+        return False
+
+
 def main():
     parser = argparse.ArgumentParser(description="Unfollow all Instagram accounts you follow, except those on your whitelist.")
     parser.add_argument("--dry-run", action="store_true", help="Print actions without actually unfollowing.")
     args = parser.parse_args()
 
     load_dotenv()
-    username = os.getenv("IG_USERNAME")
-    password = os.getenv("IG_PASSWORD")
+    username  = os.getenv("IG_USERNAME")
+    password  = os.getenv("IG_PASSWORD")
+    sessionid = os.getenv("IG_SESSIONID", "").strip()
 
-    if not username or not password:
-        print("Error: Please set IG_USERNAME and IG_PASSWORD in your .env file.")
+    if not username:
+        print("Error: Please set IG_USERNAME in your .env file.")
         return
 
     cl = Client()
-    # Adding a random delay range to requests to avoid quick blocks
     cl.delay_range = [1, 3]
 
     session_file = "session.json"
-    
-    # 1. Device identity lock-in: load or save settings BEFORE login so UUIDs persist across runs
+
+    # Load saved device settings if available so Instagram recognises the same device UUID
     if os.path.exists(session_file):
-        print(f"Loading session and device settings from {session_file}...")
-        cl.load_settings(session_file)
-    else:
-        print("Generating new device mapping from scratch...")
-        # Tie the Android device ID to the user_id so it's stable and predictable!
-        # Instagrapi generates a random Device ID by default if we don't do this, 
-        # which immediately triggers a Challenge Checkpoint because Instagram thinks this
-        # is a new phone every time the script runs.
-        
-        # We manually generate a deterministic UUID based on the username
-        stable_hash = hashlib.md5(username.encode()).hexdigest()
-        device_uuid = str(uuid.UUID(stable_hash))
-        
-        cl.set_uuids({
-            "phone_id": device_uuid,
-            "uuid": device_uuid
-        })
-        cl.set_device({
-            "app_version": "269.0.0.18.75",
-            "android_version": 26,
-            "android_release": "8.0.0",
-            "dpi": "480dpi",
-            "resolution": "1080x1920",
-            "manufacturer": "OnePlus",
-            "device": "devitron",
-            "model": "6T Dev",
-            "cpu": "qcom",
-            "version_code": "314665256"
-        })
-        cl.dump_settings(session_file)
+        try:
+            cl.load_settings(session_file)
+            print(f"Device settings loaded from {session_file}.")
+        except Exception:
+            pass
 
     logged_in = False
-    
-    # 2. Check if a valid session already exists in the dict
-    if cl.cookie_dict.get("sessionid"):
+
+    # ── Try session ID first (most reliable, no challenge) ────
+    if sessionid:
+        logged_in = login_via_sessionid(cl, sessionid, username, session_file)
+
+    # ── If session cookie in existing session.json is still valid ────
+    if not logged_in and cl.cookie_dict.get("sessionid"):
         try:
-            print("Checking if existing session is valid...")
+            print("Checking if saved session is still valid...")
             cl.get_timeline_feed()
             logged_in = True
-            print("Session is valid.")
+            print("Saved session is valid.")
         except Exception:
-            print("Session is invalid, will need to re-login.")
-            logged_in = False
+            print("Saved session expired — will re-login.")
 
-    # 3. If no valid session, try logging in
+    # ── Fall back to password login ───────────────────────────
+    if not logged_in and password:
+        logged_in = login_via_password(cl, username, password, session_file)
+
     if not logged_in:
-        print(f"Attempting password login for {username}...")
-        try:
-            cl.login(username, password)
-            cl.dump_settings(session_file)
-            print("Logged in successfully and session saved.")
-        except Exception as e:
-            import traceback
-            print(f"\nFailed to login: {e}")
-            print("\n=================")
-            print("IMPORTANT: Instagram may have served a Challenge Checkpoint.")
-            print("Your automatically generated Device ID has been saved to 'session.json'.")
-            print("Please open the Instagram app on your phone, tap 'This was me' to approve the new login.")
-            print("Then run this script again. It will use the SAME Device ID which is now approved.")
-            print("=================\n")
-            traceback.print_exc()
-            return
+        return
 
     print("Checking your user ID...")
     user_id = cl.user_id
