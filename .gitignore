@@ -52,3 +52,6 @@ script_output.txt
 config/credentials.json
 README.md
 config/whitelist.json
+data/followers.json
+data/following.json
+data/not_following_back.json

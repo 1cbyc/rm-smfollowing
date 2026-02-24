@@ -176,6 +176,28 @@ The bot continuously monitors the page for these Instagram phrases:
 
 ---
 
+## See Output
+
+![scraping](screenshots/sraping-process.png)
+![scraping](screenshots/sraping-process-2.png)
+
+---
+
+## Do this (if you use macos)
+
+```bash
+### Download (replace 114.0.5735.90 with your exact version)
+curl -O https://chromedriver.storage.googleapis.com/114.0.5735.90/chromedriver_mac64.zip
+unzip chromedriver_mac64.zip
+mv chromedriver drivers/chromedriver_mac
+
+#### Allow macOS to run it
+chmod +x drivers/chromedriver_mac
+xattr -d com.apple.quarantine drivers/chromedriver_mac
+```
+
+---
+
 ## Module Reference
 
 | File | Purpose |
