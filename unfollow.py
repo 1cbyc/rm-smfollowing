@@ -261,6 +261,13 @@ def main() -> None:
 
     print(f"\nTotal accounts you follow : {len(following)}")
 
+    # ── Save following list to file ───────────────────────────────────────────
+    os.makedirs("data", exist_ok=True)
+    following_file = "data/following.json"
+    with open(following_file, "w", encoding="utf-8") as f:
+        json.dump(following, f, indent=2, ensure_ascii=False)
+    print(f"Following list saved to {following_file}")
+
     # ── Apply whitelist ───────────────────────────────────────────────────────
     targets = [
         u for u in following
